@@ -9,7 +9,7 @@ CREATE TABLE filing_raw (
     filing_date DATE NOT NULL,
     accepted_at TIMESTAMPTZ,
     primary_document TEXT NOT NULL,
-    raw_xml_s3_uri TEXT,
+    raw_xml_s3_uri TEXT,-
     raw_xml BYTEA,
     content_sha256 CHAR(64) NOT NULL,
     fetched_at TIMESTAMPTZ NOT NULL,

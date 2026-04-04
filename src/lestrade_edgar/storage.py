@@ -58,4 +58,4 @@ def suggested_s3_key(
     """Stable object key: version by hash for idempotency."""
     safe_doc = primary_document.replace("\\", "/").split("/")[-1]
     nodash = accession_number.replace("-", "")
-    return f"edgar/{cik_padded}/{nodash}/{content_sha256_hex[:16]}_{safe_doc}"
+    return f"raw_xml/{cik_padded}/{nodash}/{content_sha256_hex[:16]}_{safe_doc}"
