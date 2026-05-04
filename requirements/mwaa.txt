@@ -2,18 +2,24 @@
 # Lestrade — Amazon MWAA requirements (placeholder)
 # =============================================================================
 # 1. Edit as needed (wheel filename/version, Airflow constraint if you use one).
-# 2. Build the wheel locally from the repo root:
-#      python3 -m pip install build && python3 -m build
-#    Upload dist/lestrade_edgar-0.1.0-py3-none-any.whl to S3 next to this file
-#    or to any prefix your execution role can read (see line below).
-# 3. Upload THIS file to the S3 key configured on your MWAA environment as the
+# 2. Build the wheel locally from the repo root (e.g. `uv build --wheel` or
+#    `python -m build`). You need: dist/lestrade_edgar-0.1.0-py3-none-any.whl
+# 3. Put that .whl at the **root** of plugins.zip (AWS unpacks it to
+#    /usr/local/airflow/plugins/). See:
+#    https://docs.aws.amazon.com/mwaa/latest/userguide/best-practices-dependencies.html
+#    (“Using the plugins.zip file on an Amazon S3 bucket”).
+#    Pip cannot use IAM for raw HTTPS S3 URLs, so a **private** object URL will
+#    403 and the package never installs — plugins.zip avoids that.
+# 4. Upload THIS file to the S3 key configured on your MWAA environment as the
 #    "Requirements" object (same bucket family as DAGs is fine, or a dedicated key).
-# 4. If you change requirements, run update-environment with the new S3 version
-#    of this object so workers reinstall packages.
+# 5. If you change requirements or plugins.zip, run UpdateEnvironment so workers
+#    reinstall packages.
 #
 # Airflow / Python version: match your MWAA Airflow version. AWS documents a
 # constraints file per version; uncomment and fix the line if pip conflicts appear:
 #    https://docs.aws.amazon.com/mwaa/latest/userguide/best-practices-dependencies.html
+
+--find-links /usr/local/airflow/plugins
 
 # PostgresHook (dags/edgar_*.py, dags/test_dag.py)
 apache-airflow-providers-postgres
@@ -26,6 +32,5 @@ psycopg2-binary>=2.9.9
 lxml>=5.0.0
 boto3>=1.34.0
 
-# Private package wheel on S3 — upload dist/lestrade_edgar-0.1.0-py3-none-any.whl to this key.
-# Must be readable by the MWAA execution role.
-s3://dw-dev-dag-559928724852-us-east-1-an/python/lestrade_edgar-0.1.0-py3-none-any.whl
+# Install from wheel inside plugins.zip (see header). Name matches pyproject.toml.
+lestrade-edgar==0.1.0

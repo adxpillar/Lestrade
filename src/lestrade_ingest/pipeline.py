@@ -299,6 +299,19 @@ def ingest_date_range(
     while d <= end:
         try:
             rows = client.discover_form4_for_date(d)
+        except EdgarRequestError as e:
+            record_ingestion_error(
+                conn,
+                stage="discover",
+                error_type="edgar_request_error",
+                message=str(e),
+                accession_number=None,
+                payload={"date": d.isoformat(), "url": e.url},
+            )
+            conn.commit()
+            counts["discover_failed"] = counts.get("discover_failed", 0) + 1
+            d += delta
+            continue
         except Exception as e:
             record_ingestion_error(
                 conn,
@@ -309,6 +322,7 @@ def ingest_date_range(
                 payload={"date": d.isoformat()},
             )
             conn.commit()
+            counts["discover_failed"] = counts.get("discover_failed", 0) + 1
             d += delta
             continue
 
@@ -346,6 +360,16 @@ def ingest_cik_submissions_for_date_range(
                     continue
                 status = ingest_form4_ref(conn, client, ref, config)
                 counts[status] = counts.get(status, 0) + 1
+        except EdgarRequestError as e:
+            record_ingestion_error(
+                conn,
+                stage="discover",
+                error_type="edgar_request_error",
+                message=str(e),
+                accession_number=None,
+                payload={"cik": str(raw_cik), "url": e.url},
+            )
+            conn.commit()
         except Exception as e:
             record_ingestion_error(
                 conn,

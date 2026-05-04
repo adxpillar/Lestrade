@@ -24,6 +24,25 @@ from lestrade_edgar.rate_limit import MinIntervalLimiter
 from lestrade_edgar.storage import store_raw_xml, suggested_s3_key
 
 
+def _normalize_identity_part(s: str) -> str:
+    """Collapse whitespace/newlines so HTTP headers stay valid (Airflow Variables, UI paste)."""
+    return " ".join((s or "").split())
+
+
+def build_sec_user_agent(app_name: str, contact_email: str) -> str:
+    """
+    User-Agent string for SEC EDGAR (fair access policy).
+
+    SEC documents a form like ``Sample Company Name AdminContact@example.com``.
+    Their edge/WAF often rejects bare scripts; ``Mozilla/5.0 (...)`` with the same
+    identity inside parentheses matches widely reported working clients while
+    still identifying traffic.
+    """
+    an = _normalize_identity_part(app_name)
+    em = _normalize_identity_part(contact_email)
+    return f"Mozilla/5.0 ({an} {em})"
+
+
 class EdgarClient:
     """
     SEC EDGAR HTTP access with required User-Agent, rate limiting, and retries.
@@ -37,6 +56,7 @@ class EdgarClient:
         *,
         app_name: str,
         contact_email: str,
+        user_agent: str | None = None,
         min_interval_s: float = 0.12,
         max_attempts: int = 6,
         base_backoff_s: float = 1.0,
@@ -44,8 +64,8 @@ class EdgarClient:
         timeout_s: float = 60.0,
         session: requests.Session | None = None,
     ) -> None:
-        an = (app_name or "").strip()
-        em = (contact_email or "").strip()
+        an = _normalize_identity_part(app_name)
+        em = _normalize_identity_part(contact_email)
         if not an or not em:
             raise ValueError("app_name and contact_email are required (SEC User-Agent policy)")
         if min_interval_s < 0:
@@ -60,16 +80,26 @@ class EdgarClient:
         self._timeout = timeout_s
         self._limiter = MinIntervalLimiter(min_interval_s)
         self._session = session or requests.Session()
+        ua = _normalize_identity_part(user_agent) if user_agent is not None else ""
+        if not ua:
+            ua = build_sec_user_agent(an, em)
         self._session.headers.update(
             {
-                "User-Agent": f"{an} {em}",
+                "User-Agent": ua,
+                "From": em,
                 "Accept-Encoding": "gzip, deflate",
                 "Accept": "*/*",
+                "Referer": "https://www.sec.gov/",
             }
         )
 
     def get_bytes(self, url: str) -> tuple[bytes, int]:
-        """GET URL; return (body, status). Retries on 429 / 5xx and transient errors."""
+        """
+        GET URL; return (body, status).
+
+        Retries on 429 / 5xx, some transient 4xx (notably 403 from SEC edge/WAF),
+        and transport errors.
+        """
         last_status: int | None = None
         for attempt in range(self._max_attempts):
             self._limiter.wait_turn()
@@ -84,7 +114,8 @@ class EdgarClient:
             last_status = int(resp.status_code)
             body = resp.content
 
-            if last_status == 429 or (500 <= last_status < 600):
+            # SEC rate limiting sometimes presents as 403 (WAF) instead of 429.
+            if last_status in (403, 429) or (500 <= last_status < 600):
                 if attempt >= self._max_attempts - 1:
                     return body, last_status
                 ra = resp.headers.get("Retry-After")
@@ -101,8 +132,14 @@ class EdgarClient:
     def get_json(self, url: str) -> Any:
         body, status = self.get_bytes(url)
         if status != 200:
+            hint = ""
+            if status == 403:
+                hint = (
+                    " (SEC returned 403; verify a descriptive User-Agent with contact email "
+                    "is set and reduce request rate/back off)"
+                )
             raise EdgarRequestError(
-                f"expected 200, got {status}",
+                f"expected 200, got {status}{hint}",
                 url=url,
                 status_code=status,
             )
@@ -111,8 +148,14 @@ class EdgarClient:
     def get_text(self, url: str) -> str:
         body, status = self.get_bytes(url)
         if status != 200:
+            hint = ""
+            if status == 403:
+                hint = (
+                    " (SEC returned 403; verify a descriptive User-Agent with contact email "
+                    "is set and reduce request rate/back off)"
+                )
             raise EdgarRequestError(
-                f"expected 200, got {status}",
+                f"expected 200, got {status}{hint}",
                 url=url,
                 status_code=status,
             )

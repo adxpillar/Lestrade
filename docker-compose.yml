@@ -1,0 +1,87 @@
+#
+# Local Airflow stack (self-hosted) for Lestrade.
+#
+# - Airflow metadata DB: local Postgres container (NOT your Supabase DB).
+# - Lestrade pipeline DB: configure an Airflow Connection named `lestrade_rds`
+#   pointing to Supabase Postgres.
+#
+# Usage:
+#   cp docker/airflow/airflow.env.example .env
+#   docker compose up airflow-init
+#   docker compose up -d
+#
+name: lestrade
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.5-python3.12
+  env_file: .env
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    # Install Lestrade + deps inside the container at startup.
+    #
+    # - `-e /opt/airflow/lestrade[ingest]` installs this repo as an editable package
+    #   so DAGs can import `lestrade_edgar` / `lestrade_ingest`.
+    # - `apache-airflow-providers-postgres` is required for PostgresHook used in dags/.
+    _PIP_ADDITIONAL_REQUIREMENTS: >-
+      -e /opt/airflow/lestrade[ingest]
+      apache-airflow-providers-postgres
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./:/opt/airflow/lestrade
+    - airflow-logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    airflow-db:
+      condition: service_healthy
+
+services:
+  airflow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD in .env}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -lc
+      - |
+        airflow db migrate
+        airflow users create \
+          --role Admin \
+          --username "${AIRFLOW_ADMIN_USERNAME:?set AIRFLOW_ADMIN_USERNAME in .env}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}" \
+          --firstname Admin \
+          --lastname User \
+          --email "${AIRFLOW_ADMIN_EMAIL:-admin@example.com}" || true
+    restart: "no"
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+volumes:
+  airflow-db:
+  airflow-logs:
+
