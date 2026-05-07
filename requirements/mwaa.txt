@@ -21,7 +21,7 @@
 
 --find-links /usr/local/airflow/plugins
 
-# PostgresHook (dags/edgar_*.py, dags/test_dag.py)
+# PostgresHook (DAGs under dags/edgar_*.py, dags/universe_snapshot.py, …)
 apache-airflow-providers-postgres
 
 # lestrade_edgar base dependency

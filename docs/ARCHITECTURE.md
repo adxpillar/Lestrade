@@ -1,6 +1,6 @@
 # SEC Form 4 Insider Trading RAG — Architecture
 
-This document describes the end-to-end system for ingesting 500K+ SEC Form 4 filings, enriching them, indexing them for semantic search, and answering natural-language questions with grounded citations.
+This document describes the end-to-end system for ingesting SEC Form 4 filings for a **covered universe** of issuers, enriching them, indexing them for semantic search, and answering natural-language questions with grounded citations.
 
 ---
 
@@ -11,9 +11,14 @@ This document describes the end-to-end system for ingesting 500K+ SEC Form 4 fil
 - **Enrich** with market and issuer context (prices, sector, market cap) for analytics and LLM grounding.
 - **Index** transaction-level text for semantic retrieval with strong metadata for filtering.
 - **Query** via a hybrid layer: **SQL** for precise/numeric questions, **RAG** for fuzzy or narrative questions, with **citations** to filings.
-- **Present** a portfolio-friendly UI (Streamlit) with filters and conversational follow-ups.
+- **Present** a portfolio-friendly UI (Streamlit) with filters and conversational follow-ups. The intended landing experience emphasizes **browseable highs and lows** from the coverage list so users can pick a ticker and ask grounded **natural‑language questions**—combining **market‑structure signals** (new highs/lows) with **insider activity** as a research aid (not advisory).
 
-**Design principle:** Postgres holds the **source of truth**; the vector store is a **search index**. Many user questions are answered best with **structured queries**; RAG complements that for language flexibility and summarization.
+**Scope update (universe-driven ingest):**
+- We ingest only issuers whose tickers are in the daily **covered universe**: stocks that cleared a **3‑month new high** or **3‑month new low** on **US exchanges**, for the stamped session (**all names** in those Barchart downloads for ``LESTRADE_UNIVERSE_TRADING_DATE``).
+- The universe is refreshed from paired **Barchart CSV exports** (filename date suffix aligned to the stamp), then persisted in Postgres for auditability.
+- Incremental ingest checks for new filings only for issuers in that universe (no market-wide daily index crawl).
+
+**Design principle:** Postgres holds the **source of truth**; the vector store is a **search index**. DDL is applied from **`db/migrations/`** (see **`db/README.md`**). Many user questions are answered best with **structured queries**; RAG complements that for language flexibility and summarization.
 
 ---
 
@@ -23,13 +28,20 @@ This document describes the end-to-end system for ingesting 500K+ SEC Form 4 fil
                     ┌─────────────────┐
                     │   SEC EDGAR     │
                     │ (submissions,   │
-                    │  indices, XML)  │
+                    │   Archives,     │
+                    │     XML)        │
                     └────────┬────────┘
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ Phase 1 — Ingestion (Python + Airflow)                        │
 │  Discover → Fetch XML → Parse → Load Postgres (raw + parsed)  │
+└────────────────────────────┬─────────────────────────────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Universe snapshot (daily, Barchart CSV pair → Postgres)      │
+│  Trading-date-stamped high/low symbols → resolve ticker→CIK  │
 └────────────────────────────┬─────────────────────────────────┘
                              │
                              ▼
@@ -87,6 +99,7 @@ This document describes the end-to-end system for ingesting 500K+ SEC Form 4 fil
 | System | Role | Constraints |
 |--------|------|-------------|
 | SEC EDGAR | Source of Form 4 XML | Rate limits (~10 req/s), required descriptive `User-Agent` with contact |
+**Operational note (SEC Archives blocks):** This project avoids a market-wide “daily index” crawl as a hard dependency; the incremental ingest is universe-driven (CIK-scoped) and therefore remains viable even when `www.sec.gov/Archives` daily index endpoints return 403 for certain networks.
 | Postgres | System of record | Backups, migrations, indexes for filter-heavy queries |
 | yfinance (or successor) | OHLCV + some issuer stats | Unofficial; rate limits; cache aggressively |
 | OpenAI (or local model) | Embeddings + chat | Cost, latency, data residency |

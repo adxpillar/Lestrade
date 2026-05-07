@@ -9,13 +9,17 @@ Trigger with **JSON config** (e.g. Airflow UI → Trigger DAG w/ config):
       "start_date": "2024-03-01",
       "end_date": "2024-03-05",
       "cik_list": ["0000320193"],
-      "use_submissions": false
+      "use_submissions": false,
+      "force_refetch": false,
+      "force_reparse": false
     }
 
 - ``use_submissions``: if true and ``cik_list`` is non-empty, uses ``data.sec.gov``
   submissions for those CIKs (``filings.recent`` only — limited history). Otherwise
   uses daily ``master.idx`` per day (full market for that date), optionally filtered
   by ``cik_list``.
+- ``force_refetch``: if true, downloads from EDGAR even if raw bytes already exist.
+- ``force_reparse``: if true, reparses and reloads even if parsed rows already exist.
 
 Uses pool **edgar_http**; create it in Admin → Pools (~4 slots). Same configuration
 as ``edgar_daily_incremental`` (environment variables and/or Airflow Variables).
@@ -70,6 +74,8 @@ def _run_backfill(**context: Any) -> None:
 
     cik_list = _parse_cik_list(conf.get("cik_list", params.get("cik_list")))
     use_submissions = bool(conf.get("use_submissions", params.get("use_submissions")))
+    force_refetch = bool(conf.get("force_refetch", params.get("force_refetch")))
+    force_reparse = bool(conf.get("force_reparse", params.get("force_reparse")))
 
     app, email = edgar_user_agent_from_env_or_variables()
     raw_mode = str_from_env_or_variable(
@@ -104,6 +110,8 @@ def _run_backfill(**context: Any) -> None:
             raw_storage=raw_mode,  # type: ignore[arg-type]
             s3_client=s3_client,
             s3_bucket=bucket,
+            force_refetch=force_refetch,
+            force_reparse=force_reparse,
         )
         if use_submissions and cik_list:
             counts = ingest_cik_submissions_for_date_range(
@@ -135,6 +143,8 @@ with DAG(
         "end_date": "2025-01-01",
         "cik_list": None,
         "use_submissions": False,
+        "force_refetch": False,
+        "force_reparse": False,
     },
 ) as dag:
     PythonOperator(

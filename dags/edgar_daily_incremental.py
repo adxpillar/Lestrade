@@ -1,5 +1,5 @@
 """
-Daily Form 4 incremental ingest (US/Eastern “yesterday” filing date).
+Daily Form 4 ingest for the covered universe (Barchart-derived high/low lists).
 
 Prerequisites
 -------------
@@ -12,11 +12,18 @@ Prerequisites
    - ``LESTRADE_RAW_STORAGE`` or Variable ``lestrade_raw_storage`` — ``bytea`` (default) or ``s3``
    - If raw storage is ``s3``: ``LESTRADE_S3_BUCKET`` or Variable ``lestrade_s3_bucket``
    - Optional: ``LESTRADE_PG_CONN`` (default connection id ``lestrade_rds``; env only — avoids noisy Variable 404 logs on AF3)
+Workflow
+--------
+- Run DAG `universe_snapshot` after dropping the day's Barchart CSV pair into
+  ``barchart_report_today/`` (see ``universe_snapshot`` DAG docs).
+- This DAG ingests Form 4 / 4-A filings for **only** those issuers, for the trading
+  date given by ``LESTRADE_UNIVERSE_TRADING_DATE`` (same stamp as `universe_snapshot`),
+  not ``max(trading_date)`` in the database.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -29,10 +36,16 @@ from lestrade_airflow_env import (
     str_from_env_or_variable,
 )
 
-
 def _ingest_yesterday() -> None:
     from lestrade_edgar.client import EdgarClient
-    from lestrade_ingest import IngestConfig, eastern_previous_calendar_date, ingest_date_range
+    from lestrade_ingest import (
+        IngestConfig,
+        ingest_cik_submissions_for_date_range,
+    )
+    from lestrade_ingest.universe import (
+        universe_ciks_for_date,
+        universe_snapshot_exists_for_date,
+    )
     import logging
 
     log = logging.getLogger(__name__)
@@ -66,18 +79,44 @@ def _ingest_yesterday() -> None:
             # SEC edge/WAF can return 403 during throttling; keep aggregate rate low.
             # With pool edgar_http=4, 0.5s implies ~8 req/s max across concurrent tasks.
             min_interval_s=0.5,
-            max_attempts=10,
+            max_attempts=6,
             base_backoff_s=5.0,
-            max_backoff_s=300.0,
+            max_backoff_s=120.0,
         )
-        day = eastern_previous_calendar_date()
+        # Same stamp as `universe_snapshot`: env (or Variable), not MAX(trading_date).
+        trading_date_s = str_from_env_or_variable(
+            "LESTRADE_UNIVERSE_TRADING_DATE",
+            "lestrade_universe_trading_date",
+            default="",
+        ).strip()
+        if not trading_date_s:
+            raise ValueError(
+                "Set LESTRADE_UNIVERSE_TRADING_DATE (YYYY-MM-DD) to the universe snapshot "
+                "date you want to ingest. Run DAG `universe_snapshot` for that date first."
+            )
+        day = date.fromisoformat(trading_date_s[:10])
+        if not universe_snapshot_exists_for_date(conn, day):
+            raise ValueError(
+                f"No universe_snapshot rows for {day.isoformat()}. "
+                "Run DAG `universe_snapshot` with the same LESTRADE_UNIVERSE_TRADING_DATE "
+                "before incremental ingest."
+            )
         cfg = IngestConfig(
             raw_storage=raw_mode,  # type: ignore[arg-type]
             s3_client=s3_client,
             s3_bucket=bucket,
         )
-        counts = ingest_date_range(conn, client, day, day, cfg)
-        log.info("EDGAR ingest counts for %s: %s", day.isoformat(), counts)
+        groups = universe_ciks_for_date(conn, day)
+        ciks = sorted(set(groups["high"]) | set(groups["low"]))
+        if not ciks:
+            log.warning("Universe snapshot exists for %s but has no resolved CIKs.", day.isoformat())
+            return
+        counts = ingest_cik_submissions_for_date_range(conn, client, ciks, day, day, cfg)
+        log.info(
+            "EDGAR ingest counts for %s (universe-only, submissions): %s",
+            day.isoformat(),
+            counts,
+        )
     finally:
         conn.close()
 
@@ -94,4 +133,5 @@ with DAG(
         task_id="ingest_yesterday_form4",
         python_callable=_ingest_yesterday,
         pool="edgar_http",
+        execution_timeout=timedelta(minutes=30),
     )

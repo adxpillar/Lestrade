@@ -55,14 +55,29 @@ In Airflow UI:
 
 ### Create tables
 
-This repo documents the Phase 1 schema in `docs/DATA_CONTRACT.md`. Create those tables in Supabase before running the DAGs.
+Apply SQL migrations in **`db/migrations/`** in order (see **`db/README.md`**) against your Supabase (or other Postgres) before running the DAGs.
 
 ### Run a small backfill to test
 
 In Airflow UI:
 
-- Trigger DAG `edgar_backfill`
-- Config example:
+- Drop **exactly one** highs and one lows CSV into **`barchart_report_today/`** (see README); optional **`LESTRADE_UNIVERSE_TRADING_DATE`** must match the date in both filenames; trigger DAG **`universe_snapshot`**
+- Then trigger DAG **`edgar_daily_incremental`**
+  - `universe_snapshot` archives processed CSVs into `barchart_report_archive/YYYY-MM-DD/` by default (override with `LESTRADE_BARCHART_ARCHIVE_DIR`).
+
+#### Universe config
+
+Put Barchart files in the mounted repo folder **`barchart_report_today/`** (shown as **`/opt/airflow/lestrade/barchart_report_today`** inside containers unless you override):
+
+```bash
+LESTRADE_UNIVERSE_TRADING_DATE=2026-05-06
+# Optional absolute path when not using Compose default mount:
+# LESTRADE_BARCHART_DIR=/opt/airflow/lestrade/barchart_report_today
+```
+
+#### Backfill (optional)
+
+Trigger DAG `edgar_backfill`:
 
 ```json
 {"start_date":"2025-01-02","end_date":"2025-01-02","use_submissions":false}

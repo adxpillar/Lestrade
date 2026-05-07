@@ -24,10 +24,16 @@ def primary_document_url(cik: str | int, accession_number: str, primary_document
 
     Path uses CIK without leading zeros (SEC convention).
     """
+    pd = (primary_document or "").strip()
+    if pd.startswith("https://") or pd.startswith("http://"):
+        return pd
+    if pd.startswith("/"):
+        # Some resolvers return absolute SEC paths (e.g. "/Archives/edgar/...").
+        return f"https://www.sec.gov{pd}"
     cik_p = pad_cik(cik)
     seg = cik_path_segment(cik_p)
     nodash = accession_nodash(accession_number)
-    doc = primary_document.lstrip("/")
+    doc = pd.lstrip("/")
     return f"https://www.sec.gov/Archives/edgar/data/{seg}/{nodash}/{doc}"
 
 

@@ -2,6 +2,8 @@
 
 This document is the **normative data contract** for ingestion (Phase 1). It defines grain, identifiers, logical fields, XML mapping expectations, amendment policy, Postgres-oriented types, and a **resilient EDGAR access strategy** compatible with **AWS RDS** and **Amazon MWAA**.
 
+**Schema definitions:** versioned SQL lives under **`db/migrations/`** (see **`db/README.md`**); this document summarizes behavior and logical fields—treat migrations as authoritative for DDL.
+
 **Authoritative XML rules:** [EDGAR Ownership XML Technical Specification](https://www.sec.gov/info/edgar/ownershipxmltechspec-v2.htm) (v2; v4 draft exists—implement parsers to tolerate both common shapes in the wild).
 
 ---
@@ -59,11 +61,13 @@ Stores **provenance** and **bytes location**; parsing reads from here or S3.
 | `cik` | `CHAR(10)` | Y | Issuer CIK (padded). |
 | `filing_date` | `DATE` | Y | Filing date as reported by SEC index or submissions (ET calendar date). |
 | `accepted_at` | `TIMESTAMPTZ` | N | SEC acceptance datetime if available from index/API. |
+| `accepted_at_atl_timestamp` | `TIMESTAMP` | N | Generated ET (America/New_York) local timestamp derived from `accepted_at`. |
 | `primary_document` | `TEXT` | Y | Filename of primary XML, e.g. `xslF345X05/wf-form4_*.xml`. |
 | `raw_xml_s3_uri` | `TEXT` | N | `s3://bucket/...` if raw bytes live in S3 (recommended at scale). |
 | `raw_xml` | `BYTEA` | N | Inline bytes only if small-dev mode; prefer S3 + NULL here in production. |
 | `content_sha256` | `CHAR(64)` | Y | Hex SHA-256 of raw XML. |
 | `fetched_at` | `TIMESTAMPTZ` | Y | When bytes were retrieved. |
+| `fetched_at_atl_timestamp` | `TIMESTAMP` | Y | Generated ET (America/New_York) local timestamp derived from `fetched_at`. |
 | `http_status` | `SMALLINT` | Y | Last HTTP status from EDGAR fetch. |
 | `fetch_error` | `TEXT` | N | Last error message if any. |
 
@@ -87,6 +91,7 @@ Stores **provenance** and **bytes location**; parsing reads from here or S3.
 | `insider_name` | `TEXT` | N | Reporting owner name. |
 | `insider_title` | `TEXT` | N | Officer title / relationship fields flattened (e.g. chief executive officer). |
 | `parsed_at` | `TIMESTAMPTZ` | Y | When parse completed. |
+| `parsed_at_atl_timestamp` | `TIMESTAMP` | Y | Generated ET (America/New_York) local timestamp derived from `parsed_at`. |
 | `parse_error` | `TEXT` | N | Set if filing-level parse failed partial. |
 
 ---
@@ -109,6 +114,19 @@ Stores **provenance** and **bytes location**; parsing reads from here or S3.
 | `footnote_ids` | `TEXT[]` | N | Optional: footnote id strings attached to amounts (for traceability). |
 
 **Indexes (recommended):** `(issuer_cik, transaction_date)`, `(issuer_ticker, transaction_date)` where ticker not null, `(insider_cik, transaction_date)`, `(transaction_code, transaction_date)`.
+
+---
+
+### 4.4 Covered universe (`security_master`, `universe_snapshot`)
+
+These tables scope **who** gets ingested (issuer CIKs derived from a daily Barchart high/low export). DDL is in **`db/migrations/003_universe_snapshot.sql`**.
+
+| Table | Role |
+|--------|------|
+| **`security_master`** | Cache: normalized **ticker → CIK** (from SEC `company_tickers.json` during `universe_snapshot`). |
+| **`universe_snapshot`** | One row per **(trading_date, ticker, universe_group)** with `universe_group` ∈ {`high`, `low`}; holds resolved `cik` when mapping succeeds. |
+
+The **`universe_snapshot`** DAG reads **`MM-DD-YYYY`** from both Barchart filenames and requires they match; optional **`LESTRADE_UNIVERSE_TRADING_DATE`** (ISO) must agree when set. Other DAGs use the env stamp for ingest windows—not `max(trading_date)` in Postgres—so reruns stay tied to the intended session.
 
 ---
 
@@ -167,6 +185,7 @@ Footnotes: `footnotes/footnote[@id]`; optional linkage via footnote attributes o
 | `message` | `TEXT` | |
 | `payload` | `JSONB` | Snippet or context |
 | `created_at` | `TIMESTAMPTZ` | |
+| `created_at_atl_timestamp` | `TIMESTAMP` | Generated ET (America/New_York) local timestamp derived from `created_at`. |
 
 ---
 
@@ -182,10 +201,10 @@ Footnotes: `footnotes/footnote[@id]`; optional linkage via footnote attributes o
 
 | Mode | Mechanism | Use case |
 |------|-----------|----------|
-| **By issuer** | `GET https://data.sec.gov/submissions/CIK##########.json` | Known CIK: walk `filings.recent` (or `filings.files`) for `form` == `4` or `4/A`. |
-| **By date range** | Daily **`master.idx`** under `https://www.sec.gov/Archives/edgar/daily-index/YYYY/QTR/master.idx` (or full index under `full-index`) | Backfill / “all Form 4s filed on date D”; parse rows where Form Type is `4` or `4/A`. |
+| **By issuer (submissions JSON)** | `GET https://data.sec.gov/submissions/CIK##########.json` | Walk `filings.recent` / `filings.files` for `form` in (`4`, `4/A`). **Primary path** for daily incremental and universe-scoped backfills: CIK list comes from `universe_snapshot` + `LESTRADE_UNIVERSE_TRADING_DATE`, or from parameterized `edgar_backfill` CIK list. |
+| **By date range (master index)** | Daily **`master.idx`** under `https://www.sec.gov/Archives/edgar/daily-index/YYYY/QTR/master.idx` | **Optional** broad backfill when Archives endpoints are reachable from your network; not required for the default universe-driven pipeline. |
 
-**Implementation note:** Index lines give CIK, company name, form type, date filed, filename; you still **fetch** the filing index page or known patterns to resolve **primary document** name, or use submissions history for that CIK to map accession → primary document when needed.
+**Implementation note:** Submissions JSON provides accession, filing date, and `primaryDocument` for each recent filing; the pipeline fetches primary XML (with HTML→XML resolution when needed). Daily **market-wide** index discovery is **not** a prerequisite for production ingest in this repo.
 
 **Do not** spawn unbounded parallel discovery workers against SEC.
 
@@ -211,9 +230,11 @@ Airflow **Pools** limit concurrent tasks but **do not** enforce requests/second 
 - Store **`DATABASE_URL`** (or host/user/password) in **AWS Secrets Manager**; MWAA reads via connection or startup script; **no secrets** in DAG code or Git.
 - Run RDS in **same VPC** as MWAA (or peered); security groups allow **Postgres 5432** from MWAA workers only.
 - **Connections:** use **Airflow Connections** for Postgres; enable **connection pooling** in app code or limit concurrent writers to avoid exhausting RDS `max_connections`.
-- **DAG design:**
-  - **`edgar_daily_incremental`:** discover yesterday (index) → write **staging table** of new accessions → batched fetch/parse/load tasks.
-  - **`edgar_backfill`:** parameterized `start_date`, `end_date`, optional CIK list; low concurrency; **pause** if error rate exceeds threshold.
+- **DAG design (universe + filings):**
+  - **`universe_snapshot`:** read Barchart highs/lows CSVs for the stamped date → resolve ticker→CIK → upsert `security_master` / `universe_snapshot`.
+  - **`edgar_daily_incremental`:** for **`LESTRADE_UNIVERSE_TRADING_DATE`**, ingest **only** CIKs present in that snapshot; submissions-based discovery per issuer (no market-wide daily index).
+  - **`edgar_backfill_on_entry`:** compare entrants vs prior snapshot **for the same stamped date context**; backfill new tickers over **`LESTRADE_ENTRY_BACKFILL_DAYS`**.
+  - **`edgar_backfill`:** parameterized `start_date`, `end_date`, optional CIK list; manual recovery / targeted history.
 - **Idempotency:** DAG reruns **safe** due to PK upserts on `accession_number` and `(accession_number, transaction_index)`.
 
 ### 9.6 RDS specifics
@@ -226,10 +247,11 @@ Airflow **Pools** limit concurrent tasks but **do not** enforce requests/second 
 
 ## 10. Deliverables checklist (Phase 1 data layer)
 
-- [ ] Tables: `filing_raw`, `filing`, `form4_transaction`, `ingestion_errors` (+ optional S3 bucket policy).
+- [ ] Apply **`db/migrations`** in order (`001` → `003`) for core tables + universe (see **`db/README.md`**).
+- [ ] Tables: `filing_raw`, `filing`, `form4_transaction`, `ingestion_errors`; universe: `security_master`, `universe_snapshot` (+ optional S3 bucket policy for raw XML).
 - [ ] Documented **transaction_index** algorithm and **total_value** rules (this doc).
-- [ ] EDGAR client with **User-Agent**, **retry/backoff**, **rate limiting**, and **pool** integration in MWAA DAGs.
-- [ ] Discovery by **CIK** and by **date range** (index-driven) specified in runbooks.
+- [ ] EDGAR client with **User-Agent**, **retry/backoff**, **rate limiting**, and **pool `edgar_http`** on DAG tasks that call SEC.
+- [ ] Runbooks: submissions-based discovery **by CIK list** (universe + backfill); optional index-based backfill documented separately.
 
 ---
 
