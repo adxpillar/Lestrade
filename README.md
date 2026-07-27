@@ -13,6 +13,9 @@ The intended **web application** showcases **browseable highs and lows** ticker 
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture, data flow, hybrid query model, and technology choices |
 | [docs/PHASES.md](docs/PHASES.md) | Phased implementation plan (ingestion → enrichment → embeddings → RAG → UI) |
 | [docs/DATA_CONTRACT.md](docs/DATA_CONTRACT.md) | Phase 1 data contract, tables, and EDGAR + MWAA + RDS strategy |
+| [docs/PHASE1_RUNBOOK.md](docs/PHASE1_RUNBOOK.md) | DAG order, env vars, monitoring SQL, validation checklist, and incident notes |
+| [docs/PHASE2_DATA.md](docs/PHASE2_DATA.md) | Phase 2 enrichment tables: field → source (Stooq, yfinance) |
+| [docs/PHASE3_ARCHITECTURE.md](docs/PHASE3_ARCHITECTURE.md) | Phase 3 embeddings: dual models, Chroma, scope, metadata rules |
 
 ## Run Airflow locally (Docker) + Supabase Postgres
 
@@ -20,6 +23,7 @@ To run the ingestion DAGs without AWS MWAA/RDS:
 
 - **Airflow on Docker**: see `docker/airflow/README.md`
 - **Database**: apply **`db/migrations/`** in order (see **`db/README.md`**); field semantics in **`docs/DATA_CONTRACT.md`**
+- **Operations**: **`docs/PHASE1_RUNBOOK.md`** (monitoring queries, SEC rate limits vs implementation, validation)
 - **Connection**: configure an Airflow Connection id **`lestrade_rds`** pointing at Supabase (details in `docker/airflow/README.md`)
 
 ## Covered universe (Barchart CSV input)

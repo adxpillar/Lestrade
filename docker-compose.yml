@@ -22,16 +22,18 @@ x-airflow-common: &airflow-common
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
     # Install Lestrade + deps inside the container at startup.
     #
-    # - `-e /opt/airflow/lestrade[ingest]` installs this repo as an editable package
-    #   so DAGs can import `lestrade_edgar` / `lestrade_ingest`.
+    # - `-e /opt/airflow/lestrade[ingest,enrich,embed]` installs this repo as an editable package
+    #   so DAGs can import `lestrade_edgar` / `lestrade_ingest` / `yfinance` (Phase 2) / embeddings (Phase 3).
     # - `apache-airflow-providers-postgres` is required for PostgresHook used in dags/.
     _PIP_ADDITIONAL_REQUIREMENTS: >-
-      -e /opt/airflow/lestrade[ingest]
+      -e /opt/airflow/lestrade[ingest,enrich,embed]
       apache-airflow-providers-postgres
+    LESTRADE_CHROMA_PERSIST_DIR: /opt/airflow/chroma
   volumes:
     - ./dags:/opt/airflow/dags
     - ./:/opt/airflow/lestrade
     - airflow-logs:/opt/airflow/logs
+    - lestrade-chroma:/opt/airflow/chroma
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     airflow-db:
@@ -84,4 +86,5 @@ services:
 volumes:
   airflow-db:
   airflow-logs:
+  lestrade-chroma:
 

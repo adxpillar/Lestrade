@@ -47,6 +47,8 @@ Step-by-step breakdown aligned with **ARCHITECTURE.md**. Week labels are targets
 
 ## Phase 2 — Enrichment (Week 1–2)
 
+**In this repository (partial):** daily price cache + per-session market context (**`security_daily_prices`**, **`universe_market_context`**, DAG `enrich_universe_market_context`); Yahoo session issuer row (**`universe_company_profile`**, `enrich_universe_company_profile`); **SEC** canonical issuer row (**`issuer_sec_profile`**, `enrich_issuer_sec_profile`, submissions JSON). See **[PHASE2_DATA.md](./PHASE2_DATA.md)**. Still open: filing-level enrichment + `feature_version`, historical “SIC as-of filing date”, Yahoo fallback.
+
 **Objective:** Add market and issuer context without blocking core EDGAR ingest.
 
 ### Steps
@@ -55,11 +57,12 @@ Step-by-step breakdown aligned with **ARCHITECTURE.md**. Week labels are targets
    - List each field and **provider**: e.g., CIK↔ticker from **SEC company tickers**; sector/industry/market cap from **yfinance** and/or **SIC** mapping (SEC does not put market cap in the basic tickers JSON).
 
 2. **Price cache schema**
-   - `security_daily_prices`: symbol (or CIK+date policy), date, OHLCV, adjusted close if used, `source`, `ingested_at`.
-   - Build windows from **cached daily rows**, not one ad-hoc `history()` call per filing.
+   - `security_daily_prices`: ticker, date, OHLCV, `source`, `ingested_at`.
+   - Build windows from **cached daily rows**, not one ad-hoc call per filing.
 
 3. **Enrichment features**
-   - For each filing (or transaction—**document the anchor date**): compute **±30 calendar/trading days** metrics as defined (e.g., return, volatility).
+   - **V1 alignment:** compute features per **(universe `trading_date`, ticker)** so the landing page “highs/lows for the session” has market context immediately.
+   - For each ticker (anchor date = `universe_snapshot.trading_date`): compute **1d/5d/20d returns** and **20d volatility** (or similar).
    - `company_profile` / issuer columns: sector, market cap, SIC, `as_of`, `source`.
 
 4. **Symbol resolution**
@@ -77,6 +80,10 @@ Step-by-step breakdown aligned with **ARCHITECTURE.md**. Week labels are targets
 ---
 
 ## Phase 3 — Embedding + Vector Store (Week 2)
+
+**Status:** Implemented — package `src/lestrade_embed/`, DAG `embed_form4_transactions`, migration `008`, Chroma volume in Compose.
+
+**Architecture (locked):** [PHASE3_ARCHITECTURE.md](./PHASE3_ARCHITECTURE.md) — MiniLM + Voyage Finance 2, Chroma on Docker volume, `embedding_index_state`, universe-scoped scope, Option 3 for `universe_group` metadata.
 
 **Objective:** Create searchable, filterable vectors from structured transaction narratives.
 

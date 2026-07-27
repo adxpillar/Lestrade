@@ -18,6 +18,14 @@ ingest = [
   "psycopg2-binary>=2.9.9",
   "lxml>=5.0.0",
 ]
+enrich = [
+  "yfinance>=0.2.40",
+]
+embed = [
+  "sentence-transformers>=3.0.0",
+  "chromadb>=0.5.0",
+  "voyageai>=0.3.0",
+]
 dev = [
   "pytest>=7.4.0",
   "responses>=0.25.0",

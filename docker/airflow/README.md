@@ -1,6 +1,6 @@
 ## Local Airflow (Docker) + Supabase Postgres
 
-This repo includes an open-source Airflow stack for running the ingestion DAGs without AWS MWAA.
+This repo includes an open-source Airflow stack for running the ingestion and enrichment DAGs without AWS MWAA.
 
 ### What runs where
 
@@ -57,6 +57,12 @@ In Airflow UI:
 
 Apply SQL migrations in **`db/migrations/`** in order (see **`db/README.md`**) against your Supabase (or other Postgres) before running the DAGs.
 
+For **Phase 2** enrichment (Stooq prices, Yahoo issuer profiles, **SEC `issuer_sec_profile`**), see **`docs/PHASE2_DATA.md`**. Apply migrations through **`007_issuer_sec_profile.sql`** after **`006`** if you use `enrich_issuer_sec_profile`.
+
+### Operations and monitoring
+
+For **DAG order**, **monitoring SQL**, **validation** against **`docs/DATA_CONTRACT.md`**, and **timeouts / incidents**, see **`docs/PHASE1_RUNBOOK.md`**.
+
 ### Run a small backfill to test
 
 In Airflow UI:
@@ -74,6 +80,8 @@ LESTRADE_UNIVERSE_TRADING_DATE=2026-05-06
 # Optional absolute path when not using Compose default mount:
 # LESTRADE_BARCHART_DIR=/opt/airflow/lestrade/barchart_report_today
 ```
+
+Other variables used by DAGs (defaults in code if unset) are documented in **`docker/airflow/airflow.env.example`**, including **`LESTRADE_ENTRY_BACKFILL_DAYS`**, **`LESTRADE_ENTRY_BACKFILL_TIMEOUT_HOURS`**, **`LESTRADE_STOOQ_APIKEY`**, **`LESTRADE_ENRICH_MARKET_TIMEOUT_HOURS`**, **`LESTRADE_ENRICH_PROFILE_TIMEOUT_HOURS`**, **`LESTRADE_YFINANCE_SLEEP_S`**, **`LESTRADE_YFINANCE_TIMEOUT_S`**, **`LESTRADE_ISSUER_SEC_SCOPE`**, **`LESTRADE_ISSUER_SEC_SECURITY_MASTER_LIMIT`**, and **`LESTRADE_ENRICH_ISSUER_SEC_TIMEOUT_HOURS`**.
 
 #### Backfill (optional)
 

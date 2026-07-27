@@ -113,6 +113,8 @@ Stores **provenance** and **bytes location**; parsing reads from here or S3.
 | `direct_indirect` | `TEXT` | N | `D` / `I` or normalized `direct` / `indirect` from `ownershipNature`. |
 | `footnote_ids` | `TEXT[]` | N | Optional: footnote id strings attached to amounts (for traceability). |
 
+**Note:** `form4_transaction` has no `*_atl_timestamp` generated columns in the current migrations; migration **`004`** adds ET-derived timestamps only to `filing_raw`, `filing`, `ingestion_errors`, `security_master`, and `universe_snapshot`.
+
 **Indexes (recommended):** `(issuer_cik, transaction_date)`, `(issuer_ticker, transaction_date)` where ticker not null, `(insider_cik, transaction_date)`, `(transaction_code, transaction_date)`.
 
 ---
@@ -225,6 +227,8 @@ Airflow **Pools** limit concurrent tasks but **do not** enforce requests/second 
 
 **Recommendation for Week 1:** **Batch sequential fetch** inside a pooled task for each partition (e.g. 50–200 filings per task), with in-process `min_interval` between HTTP calls.
 
+**Lestrade implementation:** `EdgarClient` supports a configurable `min_interval_s` (default **0.12** s in code). **Airflow ingest DAGs** construct the client with **`min_interval_s=0.5`** (~2 requests/s per worker process) for conservative operation against SEC edge behavior. Tasks use pool **`edgar_http`**. Tune pool slots × workers so aggregate traffic remains within SEC guidance.
+
 ### 9.5 MWAA operational practices
 
 - Store **`DATABASE_URL`** (or host/user/password) in **AWS Secrets Manager**; MWAA reads via connection or startup script; **no secrets** in DAG code or Git.
@@ -235,6 +239,7 @@ Airflow **Pools** limit concurrent tasks but **do not** enforce requests/second 
   - **`edgar_daily_incremental`:** for **`LESTRADE_UNIVERSE_TRADING_DATE`**, ingest **only** CIKs present in that snapshot; submissions-based discovery per issuer (no market-wide daily index).
   - **`edgar_backfill_on_entry`:** compare entrants vs prior snapshot **for the same stamped date context**; backfill new tickers over **`LESTRADE_ENTRY_BACKFILL_DAYS`**.
   - **`edgar_backfill`:** parameterized `start_date`, `end_date`, optional CIK list; manual recovery / targeted history.
+  - **`enrich_universe_market_context`:** Phase 2 market context (Stooq, etc.) after universe is stamped; uses **`LESTRADE_UNIVERSE_TRADING_DATE`** and migration **`005`** tables (see **`db/README.md`**).
 - **Idempotency:** DAG reruns **safe** due to PK upserts on `accession_number` and `(accession_number, transaction_index)`.
 
 ### 9.6 RDS specifics
@@ -247,11 +252,13 @@ Airflow **Pools** limit concurrent tasks but **do not** enforce requests/second 
 
 ## 10. Deliverables checklist (Phase 1 data layer)
 
-- [ ] Apply **`db/migrations`** in order (`001` → `003`) for core tables + universe (see **`db/README.md`**).
-- [ ] Tables: `filing_raw`, `filing`, `form4_transaction`, `ingestion_errors`; universe: `security_master`, `universe_snapshot` (+ optional S3 bucket policy for raw XML).
-- [ ] Documented **transaction_index** algorithm and **total_value** rules (this doc).
-- [ ] EDGAR client with **User-Agent**, **retry/backoff**, **rate limiting**, and **pool `edgar_http`** on DAG tasks that call SEC.
-- [ ] Runbooks: submissions-based discovery **by CIK list** (universe + backfill); optional index-based backfill documented separately.
+Operators and implementers should verify the following (see **[PHASE1_RUNBOOK.md](./PHASE1_RUNBOOK.md)** for DAG order, monitoring SQL, and validation steps):
+
+- Apply **`db/migrations`** in order (**`001` → `007`** for full Phase 2 stack in this repo; Phase 1 filing + universe core is **`001`–`003`**; **`004`** adds ET generated columns; **`005`**–**`007`** add Phase 2 market, Yahoo session profile, and SEC issuer profile — see **`db/README.md`**).
+- Tables present: `filing_raw`, `filing`, `form4_transaction`, `ingestion_errors`; universe: `security_master`, `universe_snapshot` (optional S3 for raw XML per `LESTRADE_RAW_STORAGE`). Phase 2 (optional for core ingest): **`security_daily_prices`**, **`universe_market_context`**, **`universe_company_profile`**, **`issuer_sec_profile`** (see **`docs/PHASE2_DATA.md`**).
+- **transaction_index** and **total_value** rules documented in §5–§6; implementation in `src/lestrade_ingest/form4_parser.py` and `loader.py`.
+- EDGAR **User-Agent**, **retries/backoff**, **in-process interval**, and Airflow **pool `edgar_http`** on tasks that call SEC.
+- Runbooks: **[PHASE1_RUNBOOK.md](./PHASE1_RUNBOOK.md)** (submissions-based CIK discovery, monitoring, incident notes); optional **master index** backfill remains documented in §9.2 as optional.
 
 ---
 
@@ -259,3 +266,25 @@ Airflow **Pools** limit concurrent tasks but **do not** enforce requests/second 
 
 - [PHASES.md](./PHASES.md) — Phase 1 steps.
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — End-to-end system view.
+- [PHASE1_RUNBOOK.md](./PHASE1_RUNBOOK.md) — Operations, monitoring SQL, validation checklist.
+- [PHASE2_DATA.md](./PHASE2_DATA.md) — Phase 2 enrichment tables (field → source).
+
+---
+
+## 12. Implementation alignment (this repository)
+
+| DATA_CONTRACT topic | Location in code |
+|----------------------|------------------|
+| §2 PK / upsert idempotency | `src/lestrade_ingest/loader.py` (`ON CONFLICT` on `filing`, `form4_transaction`); raw dedup in `filing_raw` helpers |
+| §3 Form 4/A (separate accession) | Parsed per accession; `document_type` / `is_amendment` on `filing` |
+| §5–§6 `total_value`, `transaction_index` | `src/lestrade_ingest/form4_parser.py` |
+| §7 XML mapping / defensive parse | `form4_parser.py`; failures → `ingestion_errors` via `src/lestrade_ingest/errors.py` (best-effort if DB connection is lost) |
+| §8 `ingestion_errors` | `record_ingestion_error` in `errors.py`; stages `discover` \| `fetch` \| `parse` \| `load` |
+| §4.4 Universe | `src/lestrade_ingest/universe.py`; DAG `dags/universe_snapshot.py`; migration `003` |
+| §9.2 Submissions discovery | `src/lestrade_edgar/client.py`, `discovery.py`; ingest `ingest_cik_submissions_for_date_range` in `pipeline.py` |
+| §9.3 Fetch / HTML→XML | `pipeline.py` (`ingest_form4_ref`), `fetch.py`, `discovery.py` |
+| §9.4 Rate limit + pool | `EdgarClient` in `src/lestrade_edgar/client.py`; `min_interval_s=0.5` in `edgar_daily_incremental.py`, `edgar_backfill.py`, `edgar_backfill_on_entry.py`; pool `edgar_http` on those DAGs, `enrich_universe_market_context`, and **`enrich_issuer_sec_profile`** |
+| §9.5 `enrich_universe_market_context` (Phase 2) | `dags/enrich_universe_market_context.py`; `src/lestrade_enrich/market.py`; migration `005` |
+| §9.5 `enrich_universe_company_profile` (Phase 2) | `dags/enrich_universe_company_profile.py`; `src/lestrade_enrich/company_profile.py`; migration `006`; optional dep **`yfinance`** (`[enrich]`) |
+| §9.5 `enrich_issuer_sec_profile` (Phase 2) | `dags/enrich_issuer_sec_profile.py`; `src/lestrade_enrich/sec_issuer_profile.py`; `src/lestrade_edgar/submissions_company.py`; migration `007` |
+| ET local timestamps (`*_atl_timestamp`) | Migration `004` generated columns on `filing_raw`, `filing`, `ingestion_errors`, `security_master`, `universe_snapshot` (see **`db/README.md`**) |
