@@ -10,6 +10,7 @@ from lestrade_edgar.models import Form4FilingRef, MasterIndexRow
 from lestrade_edgar.storage import store_raw_xml, suggested_s3_key
 
 from lestrade_ingest.config import IngestConfig
+from lestrade_ingest.db import is_connection_exception, safe_commit, safe_rollback
 from lestrade_ingest.errors import record_ingestion_error
 from lestrade_ingest.filing_raw import (
     EMPTY_CONTENT_SHA256,
@@ -267,7 +268,9 @@ def ingest_form4_ref(
             message=str(e),
             accession_number=acc,
         )
-        conn.commit()
+        safe_commit(conn)
+        if is_connection_exception(e):
+            raise
         return "parse_failed"
 
     try:
@@ -281,7 +284,7 @@ def ingest_form4_ref(
         conn.commit()
         return "ingested"
     except Exception as e:
-        conn.rollback()
+        safe_rollback(conn)
         record_ingestion_error(
             conn,
             stage="load",
@@ -289,7 +292,9 @@ def ingest_form4_ref(
             message=str(e),
             accession_number=acc,
         )
-        conn.commit()
+        safe_commit(conn)
+        if is_connection_exception(e):
+            raise
         return "parse_failed"
 
 
@@ -435,7 +440,7 @@ def ingest_cik_submissions_for_date_range(
                 accession_number=None,
                 payload={"cik": str(raw_cik), "url": e.url},
             )
-            conn.commit()
+            safe_commit(conn)
         except Exception as e:
             record_ingestion_error(
                 conn,
@@ -445,7 +450,10 @@ def ingest_cik_submissions_for_date_range(
                 accession_number=None,
                 payload={"cik": str(raw_cik)},
             )
-            conn.commit()
+            safe_commit(conn)
+            # Lost DB connection: fail the task so Airflow retries with a fresh connection.
+            if is_connection_exception(e):
+                raise
     return counts
 
 

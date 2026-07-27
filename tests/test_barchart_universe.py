@@ -29,11 +29,12 @@ def test_barchart_universe_paths() -> None:
 
 
 def test_tickers_from_barchart_csv_sample_highs() -> None:
+    # Use a small representative sample rather than depending on local drop folders.
     repo = Path(__file__).resolve().parent.parent
-    path = repo / "barchart_report_today" / "all-us-exchanges-3-month-new-highs-05-06-2026.csv"
+    path = repo / "tests" / "fixtures" / "barchart_highs_sample.csv"
     tickers = tickers_from_barchart_csv(path)
     assert tickers[:3] == ["AAPL", "ABCB", "ABEO"]
-    assert len(tickers) >= 400
+    assert len(tickers) >= 10
 
 
 def test_resolve_barchart_report_dir_explicit() -> None:

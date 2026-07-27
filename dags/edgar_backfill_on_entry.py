@@ -143,10 +143,21 @@ with DAG(
     tags=["lestrade", "edgar", "ingest", "backfill", "universe"],
     max_active_runs=1,
 ) as dag:
+    timeout_hours_s = str_from_env_or_variable(
+        "LESTRADE_ENTRY_BACKFILL_TIMEOUT_HOURS",
+        "lestrade_entry_backfill_timeout_hours",
+        default="6",
+    ).strip()
+    try:
+        timeout_hours = int(timeout_hours_s)
+    except ValueError:
+        timeout_hours = 6
+    timeout_hours = max(1, min(timeout_hours, 72))
+
     PythonOperator(
         task_id="backfill_new_entrants",
         python_callable=_backfill_new_entrants,
         pool="edgar_http",
-        execution_timeout=timedelta(hours=3),
+        execution_timeout=timedelta(hours=timeout_hours),
     )
 
