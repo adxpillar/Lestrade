@@ -46,6 +46,25 @@ def test_no_retry_on_404():
 
 
 @responses.activate
+def test_user_agent_override():
+    url = "https://data.sec.gov/submissions/CIK0000000000.json"
+    responses.add(responses.GET, url, json={"cik": "0", "filings": {"recent": {}}}, status=200)
+
+    c = EdgarClient(
+        app_name="MyApp",
+        contact_email="ops@example.com",
+        user_agent="CustomUA/1.0 (ops@example.com)",
+        min_interval_s=0.0,
+        base_backoff_s=0.0,
+        max_backoff_s=0.0,
+    )
+    c.get_json(url)
+    assert responses.calls[0].request.headers["User-Agent"] == "CustomUA/1.0 (ops@example.com)"
+    assert responses.calls[0].request.headers["From"] == "ops@example.com"
+    assert responses.calls[0].request.headers["Referer"] == "https://www.sec.gov/"
+
+
+@responses.activate
 def test_user_agent_header():
     url = "https://data.sec.gov/submissions/CIK0000000000.json"
     responses.add(responses.GET, url, json={"cik": "0", "filings": {"recent": {}}}, status=200)
@@ -58,7 +77,12 @@ def test_user_agent_header():
         max_backoff_s=0.0,
     )
     c.get_json(url)
-    assert responses.calls[0].request.headers["User-Agent"] == "MyApp ops@example.com"
+    assert (
+        responses.calls[0].request.headers["User-Agent"]
+        == "Mozilla/5.0 (MyApp ops@example.com)"
+    )
+    assert responses.calls[0].request.headers["From"] == "ops@example.com"
+    assert responses.calls[0].request.headers["Referer"] == "https://www.sec.gov/"
 
 
 def test_min_interval_spacing():

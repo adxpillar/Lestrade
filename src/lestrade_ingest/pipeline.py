@@ -74,6 +74,14 @@ def ingest_form4_ref(
     """
     acc = ref.accession_number
     existing = get_filing_raw_row(conn, acc)
+    # Submissions JSON (`data.sec.gov`) provides `primaryDocument`, but in practice it can
+    # occasionally be HTML (e.g. an index/landing page) rather than the actual Form 4 XML.
+    # Resolve via the filing index as needed so `parse_form4_xml()` receives XML bytes.
+    primary_doc = ref.primary_document
+    if primary_doc and not primary_doc.lower().endswith(".xml"):
+        resolved = client.resolve_primary_document_from_filing_index(ref.cik, acc)
+        if resolved:
+            primary_doc = resolved
 
     skip_fetch = (
         not config.force_refetch
@@ -94,14 +102,14 @@ def ingest_form4_ref(
 
     if not skip_fetch:
         try:
-            fr = client.fetch_primary_document(ref.cik, acc, ref.primary_document)
+            fr = client.fetch_primary_document(ref.cik, acc, primary_doc)
         except EdgarRequestError as e:
             record_filing_raw_fetch_failure(
                 conn,
                 accession_number=acc,
                 cik=ref.cik,
                 filing_date=ref.filing_date,
-                primary_document=ref.primary_document,
+                primary_document=primary_doc,
                 http_status=e.status_code or 0,
                 fetch_error=str(e),
             )
@@ -122,7 +130,7 @@ def ingest_form4_ref(
                 accession_number=acc,
                 cik=ref.cik,
                 filing_date=ref.filing_date,
-                primary_document=ref.primary_document,
+                primary_document=primary_doc,
                 http_status=fr.http_status,
                 fetch_error=f"HTTP {fr.http_status}",
             )
@@ -166,7 +174,7 @@ def ingest_form4_ref(
             cik=ref.cik,
             filing_date=ref.filing_date,
             accepted_at=accepted_at,
-            primary_document=ref.primary_document,
+            primary_document=primary_doc,
             raw_xml_s3_uri=raw_uri,
             raw_xml=raw_blob,
             content_sha256=fr.content_sha256_hex,
@@ -175,6 +183,64 @@ def ingest_form4_ref(
         )
         xml_bytes = fr.content
         conn.commit()
+
+    # If we fetched something but it's HTML (SEC sometimes serves an index/landing page even
+    # for .xml-looking paths), try a one-time resolution to the real XML via the filing index
+    # and refetch.
+    if (
+        xml_bytes is not None
+        and primary_doc
+        and (
+            b"<html" in xml_bytes[:4096].lower()
+            or b"<!doctype html" in xml_bytes[:4096].lower()
+            or b"<head" in xml_bytes[:4096].lower()
+            or b"<meta" in xml_bytes[:4096].lower()
+        )
+    ):
+        resolved = client.resolve_primary_document_from_filing_index(ref.cik, acc)
+        if resolved and resolved != primary_doc:
+            try:
+                fr2 = client.fetch_primary_document(ref.cik, acc, resolved)
+            except EdgarRequestError:
+                fr2 = None
+            if fr2 is not None and fr2.http_status == 200:
+                raw_uri2: str | None = None
+                raw_blob2: bytes | None = None
+                if config.raw_storage == "bytea":
+                    st2 = store_raw_xml(fr2, mode="bytea")
+                    raw_blob2 = st2.raw_xml
+                else:
+                    if not config.s3_bucket or config.s3_client is None:
+                        raise ValueError('raw_storage="s3" requires s3_bucket and s3_client')
+                    key2 = suggested_s3_key(
+                        cik_padded=ref.cik,
+                        accession_number=acc,
+                        primary_document=resolved,
+                        content_sha256_hex=fr2.content_sha256_hex,
+                    )
+                    st2 = store_raw_xml(
+                        fr2,
+                        mode="s3",
+                        s3_client=config.s3_client,
+                        bucket=config.s3_bucket,
+                        key=key2,
+                    )
+                    raw_uri2 = st2.raw_xml_s3_uri
+                upsert_filing_raw_success(
+                    conn,
+                    accession_number=acc,
+                    cik=ref.cik,
+                    filing_date=ref.filing_date,
+                    accepted_at=accepted_at,
+                    primary_document=resolved,
+                    raw_xml_s3_uri=raw_uri2,
+                    raw_xml=raw_blob2,
+                    content_sha256=fr2.content_sha256_hex,
+                    fetched_at=fr2.fetched_at,
+                    http_status=fr2.http_status,
+                )
+                xml_bytes = fr2.content
+                conn.commit()
 
     if xml_bytes is None:
         record_ingestion_error(
@@ -299,6 +365,19 @@ def ingest_date_range(
     while d <= end:
         try:
             rows = client.discover_form4_for_date(d)
+        except EdgarRequestError as e:
+            record_ingestion_error(
+                conn,
+                stage="discover",
+                error_type="edgar_request_error",
+                message=str(e),
+                accession_number=None,
+                payload={"date": d.isoformat(), "url": e.url},
+            )
+            conn.commit()
+            counts["discover_failed"] = counts.get("discover_failed", 0) + 1
+            d += delta
+            continue
         except Exception as e:
             record_ingestion_error(
                 conn,
@@ -309,6 +388,7 @@ def ingest_date_range(
                 payload={"date": d.isoformat()},
             )
             conn.commit()
+            counts["discover_failed"] = counts.get("discover_failed", 0) + 1
             d += delta
             continue
 
@@ -346,6 +426,16 @@ def ingest_cik_submissions_for_date_range(
                     continue
                 status = ingest_form4_ref(conn, client, ref, config)
                 counts[status] = counts.get(status, 0) + 1
+        except EdgarRequestError as e:
+            record_ingestion_error(
+                conn,
+                stage="discover",
+                error_type="edgar_request_error",
+                message=str(e),
+                accession_number=None,
+                payload={"cik": str(raw_cik), "url": e.url},
+            )
+            conn.commit()
         except Exception as e:
             record_ingestion_error(
                 conn,

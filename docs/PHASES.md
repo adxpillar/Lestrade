@@ -17,12 +17,12 @@ Step-by-step breakdown aligned with **ARCHITECTURE.md**. Week labels are targets
 
 2. **EDGAR access**
    - Register **User-Agent** (app name + contact email) per SEC guidance.
-   - Implement **discovery**: by **CIK** (submissions JSON) and/or **date range** (daily index or bulk workflows—not a single “all Form 4s” API call).
+   - Implement **discovery**: by **CIK** (submissions JSON) for a **covered universe** of issuers.
    - Implement **fetch** with retries, backoff, respect **~10 requests/second**, and record HTTP status.
 
 3. **Postgres schema**
-   - `filing_raw`: accession, CIK, dates, raw XML or S3 pointer, `content_sha256`, `ingested_at`.
-   - `filing_parsed` / `transactions`: normalized fields; **unique** `(accession_number)` and `(accession_number, transaction_index)` (or equivalent).
+   - Apply **`db/migrations/`** in order (`db/README.md`); core objects: `filing_raw`, `filing`, `form4_transaction`, `ingestion_errors`, plus `security_master` / `universe_snapshot` for the covered universe.
+   - **Unique** `(accession_number)` and `(accession_number, transaction_index)` (or equivalent per `DATA_CONTRACT.md`).
 
 4. **Python pipeline**
    - Modules: discover → fetch → parse → load.
@@ -30,14 +30,16 @@ Step-by-step breakdown aligned with **ARCHITECTURE.md**. Week labels are targets
    - **Dedup**: skip fetch if accession + hash already ingested; upsert on conflict for replays.
 
 5. **Airflow**
-   - DAG: **daily incremental** (e.g., last N hours / yesterday).
-   - DAG: **parameterized backfill** (`start_date`, `end_date`, optional CIK list).
+   - DAG: **universe snapshot** (Barchart highs/lows CSV pair, date-stamped filenames; resolved to CIKs; persisted in Postgres).
+   - DAG: **daily incremental ingest** for the stamped `LESTRADE_UNIVERSE_TRADING_DATE` (CIK-scoped; aligns with `universe_snapshot`, not `max(trading_date)`).
+   - DAG: **entrant backfill** — when a new ticker enters the universe, backfill for the last year (or configured range).
+   - DAG: **parameterized backfill** (`start_date`, `end_date`, optional CIK list) remains for manual replays / targeted recovery.
    - Cap **parallelism** to stay within SEC limits; use pools if needed.
 
 6. **Quality gates**
    - Sample validation against known filings; monitor counts and error rates per run.
 
-**Deliverables:** Postgres with raw + parsed data; two DAGs; documented idempotency keys; ingestion runbook (User-Agent, limits).
+**Deliverables:** Postgres with raw + parsed data; Airflow DAGs (`universe_snapshot`, `edgar_daily_incremental`, `edgar_backfill_on_entry`, `edgar_backfill`); documented idempotency keys; ingestion runbook (User-Agent, limits).
 
 **Hosting notes:** Postgres on **RDS**, **Neon**, or comparable; Airflow on **MWAA** or **Docker/EC2** for early demos.
 

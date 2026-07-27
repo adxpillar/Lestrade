@@ -1,6 +1,11 @@
 .venv/
+.venv_tmp/
+.DS_Store
+**/.DS_Store
 __pycache__/
 *.egg-info/
 .pytest_cache/
 dist/
 build/
+.env
+.env.*

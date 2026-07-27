@@ -186,16 +186,29 @@ def parse_filing_index_for_primary_xml(html: str) -> str | None:
     if not hrefs:
         return None
 
+    def _is_xsl_wrapper(h: str) -> bool:
+        low = h.lower()
+        # Common SEC directory for XSL-rendered "XML" that is actually an HTML landing page.
+        return "/xslf345" in low or "xslf345x" in low
+
+    # If any non-XSL XML links exist, prefer them and ignore the XSL wrappers.
+    non_xsl = [h for h in hrefs if not _is_xsl_wrapper(h)]
+    candidates = non_xsl or hrefs
+
     def score(h: str) -> tuple[int, int]:
         low = h.lower()
         pri = 0
-        if "form4" in low or "form_4" in low or "ownership" in low or "xslf345" in low:
-            pri = 2
+        # Strongest signals: direct form4 XML filenames / ownership forms.
+        if "form4" in low or "form_4" in low or "ownership" in low:
+            pri = 3
         elif "doc4" in low:
-            pri = 1
+            pri = 2
+        # XSL wrapper links should be last-resort (kept only if nothing else exists).
+        if _is_xsl_wrapper(low):
+            pri = min(pri, 0)
         return (-pri, len(h))
 
-    hrefs_sorted = sorted(hrefs, key=score)
+    hrefs_sorted = sorted(candidates, key=score)
     pick = hrefs_sorted[0]
     if pick.startswith("http://") or pick.startswith("https://"):
         return pick
