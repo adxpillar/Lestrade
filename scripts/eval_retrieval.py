@@ -60,9 +60,16 @@ def main() -> int:
     if not (os.environ.get("LESTRADE_CHROMA_PERSIST_DIR") or "").strip():
         print("Set LESTRADE_CHROMA_PERSIST_DIR", file=sys.stderr)
         return 1
+    only = (os.environ.get("LESTRADE_EVAL_MODELS") or "minilm").strip().lower()
+    if only == "voyage":
+        models = ["voyage-finance-2"]
+    elif only in ("both", "all"):
+        models = ["all-MiniLM-L6-v2", "voyage-finance-2"]
+    else:
+        models = ["all-MiniLM-L6-v2"]
     for q in EVAL_QUESTIONS:
-        _query_collection("all-MiniLM-L6-v2", q)
-        _query_collection("voyage-finance-2", q)
+        for mid in models:
+            _query_collection(mid, q)
     return 0
 
 
