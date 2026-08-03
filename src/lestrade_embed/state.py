@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from lestrade_embed.config import ModelSpec
 from lestrade_ingest.db import connection_cursor
@@ -29,6 +29,50 @@ def get_index_state(
     if not row:
         return None
     return {"content_hash": row[0], "status": row[1]}
+
+
+def load_index_states_for_model(
+    conn: Any,
+    *,
+    model_id: str,
+    keys: Iterable[tuple[str, int]] | None = None,
+) -> dict[tuple[str, int], dict[str, Any]]:
+    """
+    Bulk-load embedding_index_state for one model.
+
+    Avoids one round-trip per transaction (important on Supabase pooler).
+    If ``keys`` is provided, only those (accession, transaction_index) pairs are returned.
+    """
+    key_set = {(a, int(i)) for a, i in keys} if keys is not None else None
+    with connection_cursor(conn) as cur:
+        cur.execute(
+            """
+            SELECT accession_number, transaction_index, content_hash, status
+            FROM embedding_index_state
+            WHERE model_id = %s
+            """,
+            (model_id,),
+        )
+        rows = cur.fetchall() or []
+    out: dict[tuple[str, int], dict[str, Any]] = {}
+    for acc, tidx, chash, status in rows:
+        key = (str(acc), int(tidx))
+        if key_set is not None and key not in key_set:
+            continue
+        out[key] = {"content_hash": chash, "status": status}
+    return out
+
+
+def needs_embed_from_prev(
+    prev: dict[str, Any] | None,
+    *,
+    content_hash: str,
+) -> bool:
+    if prev is None:
+        return True
+    if prev.get("status") != "ok":
+        return True
+    return prev.get("content_hash") != content_hash
 
 
 def upsert_index_state(
@@ -87,8 +131,4 @@ def needs_embed(
         transaction_index=transaction_index,
         model_id=model_id,
     )
-    if prev is None:
-        return True
-    if prev.get("status") != "ok":
-        return True
-    return prev.get("content_hash") != content_hash
+    return needs_embed_from_prev(prev, content_hash=content_hash)

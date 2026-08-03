@@ -16,6 +16,15 @@ The intended **web application** showcases **browseable highs and lows** ticker 
 | [docs/PHASE1_RUNBOOK.md](docs/PHASE1_RUNBOOK.md) | DAG order, env vars, monitoring SQL, validation checklist, and incident notes |
 | [docs/PHASE2_DATA.md](docs/PHASE2_DATA.md) | Phase 2 enrichment tables: field → source (Stooq, yfinance) |
 | [docs/PHASE3_ARCHITECTURE.md](docs/PHASE3_ARCHITECTURE.md) | Phase 3 embeddings: dual models, Chroma, scope, metadata rules |
+| [docs/UI_OLLAMA.md](docs/UI_OLLAMA.md) | Phase 4/5 demo: MiniLM retrieval + Ollama chat + Streamlit |
+
+## Run the chat UI (MiniLM + Ollama, no Voyage)
+
+See **[docs/UI_OLLAMA.md](docs/UI_OLLAMA.md)**. Short version:
+
+1. Install and start [Ollama](https://ollama.com), then `ollama pull llama3.2`
+2. Point `LESTRADE_CHROMA_PERSIST_DIR` at `./data/chroma` (Compose bind-mounts this for Airflow)
+3. `uv sync --extra ui` then `uv run streamlit run app/streamlit_app.py`
 
 ## Run Airflow locally (Docker) + Supabase Postgres
 

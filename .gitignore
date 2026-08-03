@@ -10,3 +10,5 @@ build/
 .env
 .env.*
 barchart_report_files/
+data/chroma/
+data/
